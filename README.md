@@ -1,10 +1,16 @@
 # Nexus AI Lab — M1
 
+仓库：[277Wwj/newproject](https://github.com/277Wwj/newproject)。项目初衷：结合上一个高并发项目的知识和新学习的 AI 知识做一个项目。
+
+**演示入口：[DEMO.md — 环境准备、启动命令、讲解脚本与异常验证](DEMO.md)**。
+
 Nexus AI Lab 是一个 Linux-first 的可观测 AI Agent 执行与性能诊断平台。本轮只交付 M1：React + TypeScript 页面可以提交任务，C++20/Boost.Beast 服务创建内存任务，并通过 SSE 推送真实的 `queued → running → completed` 生命周期事件。
+
+当前 M1 的 `completed` 只表示生命周期演示结束，不表示完成了输入中的诊断需求；尚未调用模型或系统工具。Linux 后端与浏览器完整链路仍待实机验证，演示预期结果和已知限制详见 [DEMO.md](DEMO.md)。
 
 ## 环境审计
 
-当前开发机是 Windows PowerShell。已确认 CMake 4.4.1、MinGW-w64 GCC 16.1.0、Node 26.3.0 和 npm 11.16.0 可用，但没有安装 Linux/WSL 发行版，也没有发现 Boost.Beast、nlohmann/json、SQLite 开发头文件。因此本机不能证明 Linux 后端已经编译；以下后端步骤必须在 Ubuntu/Debian Linux 或已安装发行版的 WSL 中执行。本轮没有静默替换技术栈。
+2026-10-24 的环境检查记录：开发机使用 Windows PowerShell，检测到 CMake 4.4.1、MinGW-w64 GCC 16.1.0、Node 26.3.0 和 npm 11.16.0；当时没有可用的 Linux/WSL 发行版，也未发现 Boost.Beast、nlohmann/json、SQLite 开发头文件。Linux 后端仍未在本机完成构建与运行验证，以下后端步骤需要在 Ubuntu/Debian Linux 或已安装发行版的 WSL 中执行。
 
 如果浏览器提示连接被拒绝，先确认两个服务是否分别启动：前端默认监听 `5173`，后端监听 `8080`。Windows PowerShell 可用下面的命令检查端口：
 
@@ -12,7 +18,7 @@ Nexus AI Lab 是一个 Linux-first 的可观测 AI Agent 执行与性能诊断�
 Get-NetTCPConnection -State Listen -LocalPort 5173,8080
 ```
 
-`5173` 没有监听表示 Vite 没启动；`8080` 没有监听表示 `nexus-server` 没启动。前端页面可以在后端未启动时打开，但任务提交和健康检查会显示离线错误，启动后点击 Retry 即可恢复。
+`5173` 没有监听表示 Vite 没启动；`8080` 没有监听表示 `nexus-server` 没启动。前端页面可以在后端未启动时打开，但任务提交和健康检查会报错。启动后可点击 Retry 重试健康检查；当前健康检查和 SSE 重连存在已知限制，完整链路需要按 [DEMO.md](DEMO.md) 实测，后端重启也不能恢复旧任务。
 
 Linux 依赖：
 
@@ -26,6 +32,7 @@ sudo apt install -y build-essential cmake libboost-system-dev nlohmann-json3-dev
 ```text
 nexus-ai-lab/
 ├── CMakeLists.txt                  # C++20 构建、依赖和 CTest
+├── DEMO.md                         # 环境准备、讲解脚本与验证步骤
 ├── backend/
 │   ├── include/nexus/
 │   │   ├── http_server.hpp         # HTTP 路由和连接生命周期接口
@@ -36,7 +43,10 @@ nexus-ai-lab/
 │   │   ├── main.cpp                # 组装模块并启动服务
 │   │   ├── sse_hub.cpp             # 线程安全 SSE 队列
 │   │   └── task_manager.cpp        # queued/running/completed 状态流
-│   └── tests/smoke.cpp              # 可重复的任务生命周期测试
+│   └── tests/
+│       ├── smoke.cpp               # 任务生命周期与延迟订阅测试
+│       ├── sse_regression.cpp      # 重复事件入队回归测试
+│       └── http_contract.sh        # 启动独立后端检查 HTTP/SSE
 ├── frontend/
 │   ├── src/App.tsx                 # 任务提交、状态和时间线
 │   ├── src/api.ts                  # HTTP API 客户端
@@ -55,6 +65,14 @@ nexus-ai-lab/
 
 ## 构建和启动
 
+获取代码（将 GitHub 仓库克隆到 `nexus-ai-lab` 目录，保持下文命令一致）：
+
+```bash
+git clone https://github.com/277Wwj/newproject.git nexus-ai-lab
+```
+
+已有本地项目请直接进入原目录，无需再次克隆。Ubuntu 版本和 Node 版本要求见 [演示环境准备](DEMO.md)。
+
 后端（Linux/WSL）：
 
 ```bash
@@ -65,7 +83,7 @@ ctest --test-dir build --output-on-failure
 ./build/nexus-server 0.0.0.0 8080
 ```
 
-`nexus_smoke` 检查任务生命周期和延迟建立 SSE 订阅时的事件回放。Linux 上的 `nexus_http_contract` 会启动真实服务并检查健康检查、任务创建、SSE、404，以及空白 prompt 拒绝。全部测试通过后，HTTP 合约中的空白 prompt 检查应返回 HTTP 400。
+`nexus_smoke` 检查任务生命周期和延迟建立 SSE 订阅时的事件回放；`nexus_sse_regression` 检查 backlog 与发布同一事件时的队列去重；Linux 上的 `nexus_http_contract` 启动真实服务并检查健康检查、任务创建、SSE、404，以及空白 prompt 拒绝。这些是测试覆盖目标，不代表 Linux 测试已经运行通过。
 
 前端（另一个终端）：
 
@@ -77,7 +95,7 @@ npm run dev
 
 `npm ci` 需要访问 npm registry，并依赖提交的 `package-lock.json`。如果出现 `ENOTFOUND registry.npmjs.org`，这是当前网络/DNS 环境无法访问 npm registry，需要切换到可联网环境后再执行安装。
 
-开发模式不需要设置 API 环境变量，Vite 会把 `/api` 代理到 `http://localhost:8080`。使用 `npm run preview` 或独立静态托管时，可以复制 `frontend/.env.example` 为 `.env`，将 `VITE_API_BASE_URL` 设置为后端 API 的完整地址，例如 `http://localhost:8080/api`。
+开发模式不需要设置 API 环境变量，Vite 会把 `/api` 代理到 `http://localhost:8080`；`npm run preview` 也配置了相同代理。独立静态托管时，可复制 `frontend/.env.example` 为 `.env`，设置 `VITE_API_BASE_URL`（例如 `http://localhost:8080/api`），然后重新运行 `npm run build`。该地址会公开嵌入前端产物，不能包含密钥，远程用户也不能用 `localhost` 访问服务器。
 
 浏览器打开 <http://localhost:5173>。
 
@@ -103,13 +121,13 @@ curl -i -X POST http://localhost:8080/api/tasks \
 curl -N http://localhost:8080/api/tasks/<task_id>/events
 ```
 
-预期能看到 `retry`、`queued`、`running` 和 `done` 事件。查询任务：
+预期先收到 `retry: 1000`，随后事件的 JSON `status` 依次为 `queued`、`running`、`completed`；对应的 SSE `event` 类型为 `status`、`status`、`done`。查询任务：
 
 ```bash
 curl http://localhost:8080/api/tasks/<task_id>
 ```
 
-异常验收：空 prompt、全空白 prompt 或非法 JSON 返回 HTTP 400；不存在的任务和 SSE 地址返回 HTTP 404；未知路由返回 HTTP 404。停止后端时前端应显示离线/重连提示，重新启动后点击 Retry 可恢复健康状态。
+异常验收预期：空 prompt、全空白 prompt 或非法 JSON 返回 HTTP 400；不存在的任务和 SSE 地址返回 HTTP 404；未知路由返回 HTTP 404。后端重启会丢失全部任务，旧 task_id 应返回 404，不能通过 Retry 恢复。浏览器健康检查和重连存在已知限制，演示前请按 [DEMO.md](DEMO.md) 验证。
 
 ## 本轮尚未实现
 
