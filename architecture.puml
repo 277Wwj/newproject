@@ -1,0 +1,311 @@
+' ============================================================================
+' Nexus AI Lab — M1 架构图集 (PlantUML)
+'
+' 一个文件包含 5 张图,按顺序渲染:
+'   1. 组件视图  —— 前端/后端/模块之间怎么连
+'   2. 类图      —— 后端三个核心类的职责与依赖
+'   3. 时序图    —— 一次完整的任务提交 + SSE 推送
+'   4. 状态机    —— 任务生命周期 queued → running → completed/failed
+'   5. 线程模型  —— 谁在哪个线程上跑,锁在哪里
+'
+' 渲染方式:
+'   plantuml architecture.puml
+'   VS Code 装 "PlantUML" 扩展后按 Alt+D 预览
+' ============================================================================
+
+
+' ============================================================================
+' 图 1:组件视图
+' ============================================================================
+@startuml 01-component-view
+title Nexus AI Lab M1 — 组件视图
+
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+
+actor "浏览器操作员" as Operator
+
+package "frontend (Vite :5173)" {
+  [App.tsx\n任务提交 / 状态机 / 时间线] as App
+  [api.ts\nHTTP + SSE 客户端] as Api
+  [types.ts\n共享数据形状] as Types
+}
+
+package "backend (nexus-server :8080)" {
+  [HttpServer\n路由 + 连接生命周期] as Http
+  [TaskManager\n任务状态 + 生命周期] as Tasks
+  [SseHub\n订阅者队列 + 事件广播] as Hub
+}
+
+database "内存\n(无持久化)" as Memory
+
+Operator --> App : 输入 prompt
+App --> Api : createTask / fetchTask / EventSource
+Api ..> Types : 类型约束
+App ..> Types
+
+Api --> Http : 开发模式下走 Vite 代理\n/api → localhost:8080
+Http --> Tasks : create_task / get_task / get_events
+Tasks --> Hub : EventSink 回调 publish()
+Tasks --> Memory : tasks_ (unordered_map)
+Hub --> Memory : subscribers_ / history_
+
+note right of Http
+  HttpServer 不执行任何模型或系统命令。
+  它只做三件事:解析请求、校验参数、写响应。
+end note
+
+note bottom of Hub
+  SSE 只负责"把已经发生的事件送出去",
+  不产生事件。事件源头永远是 TaskManager。
+end note
+
+@enduml
+
+
+' ============================================================================
+' 图 2:类图
+' ============================================================================
+@startuml 02-class-diagram
+title Nexus AI Lab M1 — 后端类图
+
+skinparam classAttributeIconSize 0
+
+enum TaskStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+class TaskEvent {
+  + sequence : uint64
+  + task_id : string
+  + status : TaskStatus
+  + message : string
+  + timestamp : string
+}
+
+class TaskSnapshot {
+  + id : string
+  + prompt : string
+  + status : TaskStatus
+  + created_at : string
+  + updated_at : string
+  + events : vector<TaskEvent>
+}
+
+class TaskManager {
+  - mutex_ : mutable mutex
+  - tasks_ : unordered_map<string, TaskRecord>
+  - workers_ : vector<thread>
+  - event_sink_ : EventSink
+  --
+  + create_task(prompt) : string
+  + get_task(id) : optional<TaskSnapshot>
+  + get_events(id) : optional<vector<TaskEvent>>
+  - run_task(id) : void
+  - append_event(id, status, message) : optional<TaskEvent>
+}
+
+class SseHub {
+  - mutex_ : mutex
+  - subscribers_ : unordered_map<string, vector<SubscriberPtr>>
+  - history_ : unordered_map<string, vector<TaskEvent>>
+  --
+  + subscribe(task_id, backlog) : SubscriberPtr
+  + wait_for_event(subscriber) : optional<TaskEvent>
+  + publish(event) : void
+  + unsubscribe(task_id, subscriber) : void
+}
+
+class Subscriber {
+  + mutex : mutex
+  + condition : condition_variable
+  + events : deque<TaskEvent>
+  + closed : bool
+}
+
+class HttpServer {
+  - host_ : string
+  - port_ : uint16
+  - task_manager_ : TaskManager&
+  - sse_hub_ : SseHub&
+  --
+  + run() : void
+  - handle_connection(socket) : void
+}
+
+class "EventSink\nstd::function<void(const TaskEvent&)>" as EventSink
+
+TaskSnapshot *-- TaskEvent : 持有
+TaskManager --> EventSink : 调用
+SseHub *-- Subscriber : 管理
+TaskManager ..> TaskEvent : 产生
+SseHub ..> TaskEvent : 转发
+HttpServer --> TaskManager : 引用
+HttpServer --> SseHub : 引用
+TaskManager ..> TaskStatus
+TaskSnapshot ..> TaskStatus
+TaskEvent ..> TaskStatus
+
+note right of TaskManager::create_task
+  1. 加锁写入 tasks_
+  2. append_event(queued)
+  3. 通过 event_sink_ 广播
+  4. 起一个后台线程跑 run_task
+end note
+
+note right of SseHub::subscribe
+  关键:加 hub 锁的同时
+  把 backlog + history 去重后
+  装进订阅者队列。
+  这样"快照"和"注册"之间
+  发布的事件不会被丢。
+end note
+
+@enduml
+
+
+' ============================================================================
+' 图 3:时序图 —— 一次完整链路
+' ============================================================================
+@startuml 03-sequence
+title Nexus AI Lab M1 — 任务提交到 SSE 完成
+
+skinparam maxMessageSize 60
+
+actor "浏览器" as Browser
+participant "App.tsx" as App
+participant "HttpServer\n(连接线程)" as Http
+participant "TaskManager" as TM
+participant "SseHub" as Hub
+participant "worker 线程\nrun_task()" as Worker
+
+== 阶段 1:健康检查 ==
+App -> Http : GET /api/health
+Http --> App : 200 {"status":"ok","milestone":"M1"}
+
+== 阶段 2:创建任务 ==
+App -> Http : POST /api/tasks {"prompt":"..."}
+Http -> Http : json::parse + 校验\n(is_blank / size > 4000)
+alt prompt 非法
+  Http --> App : 400 {"error":"..."}
+else prompt 合法
+  Http -> TM : create_task(prompt)
+  TM -> TM : 加锁写 tasks_[id]\nstatus = queued
+  TM -> TM : append_event(queued)\nsequence = 1
+  TM -> Hub : event_sink_(event) → publish()
+  Hub -> Hub : 写 history_[id],\n推给现有订阅者(此刻为空)
+  TM -> Worker : std::thread(run_task(id))
+  Http --> App : 201 task JSON(含 events[1])
+end
+
+== 阶段 3:订阅 SSE ==
+App -> Http : GET /api/tasks/{id}/events\n(EventSource)
+Http -> TM : get_events(id)
+TM --> Http : 快照 [queued]
+Http -> Http : 手写响应头 +\nTransfer-Encoding: chunked
+Http -> App : chunk: "retry: 1000"
+Http -> Hub : subscribe(id, backlog=[queued])
+Hub -> Hub : 加 hub 锁 + 订阅者锁\nbacklog ∪ history 按 sequence 去重
+Http -> App : chunk: event(status, queued)
+
+== 阶段 4:worker 推进生命周期 ==
+Worker -> Worker : sleep 250ms
+Worker -> TM : append_event(running)
+TM -> Hub : publish(running)
+Hub -> Http : 唤醒 condition_variable
+Http -> App : chunk: event(status, running)
+Worker -> Worker : sleep 650ms
+Worker -> TM : append_event(completed)
+TM -> Hub : publish(completed)
+Hub -> Http : 唤醒
+Http -> App : chunk: event(done, completed)
+Http -> Hub : unsubscribe(id, subscriber)
+Http -> App : "0\r\n\r\n" 结束 chunked
+
+== 阶段 5:前端收敛 ==
+App -> App : mergeEvents 按 sequence 去重排序
+App -> App : isTerminal → source.close()\nterminalRef = true
+note over App : 若在完成前断线:\nonerror → GET /tasks/{id} 兜底拉全量
+
+@enduml
+
+
+' ============================================================================
+' 图 4:任务状态机
+' ============================================================================
+@startuml 04-task-state
+title Nexus AI Lab M1 — 任务生命周期状态机
+
+[*] --> queued : POST /api/tasks\ncreate_task() 写入内存
+queued --> running : run_task 线程\nsleep 250ms 后 append_event
+running --> completed : sleep 650ms 后 append_event
+running --> failed : run_task 抛异常\ncatch → append_event(failed)
+completed --> [*] : SSE 发送 "0\\r\\n\\r\\n" 后关闭连接
+failed --> [*] : SSE 发送 "0\\r\\n\\r\\n" 后关闭连接
+
+note right of queued
+  M1 的 queued 没有真实排队:
+  每个任务立刻拿到独立线程。
+  状态只用于演示可观测性。
+end note
+
+note right of completed
+  completed 只表示
+  "生命周期演示结束",
+  不代表完成了 prompt 里的诊断需求。
+end note
+
+@enduml
+
+
+' ============================================================================
+' 图 5:线程与并发模型
+' ============================================================================
+@startuml 05-threading
+title Nexus AI Lab M1 — 线程模型与锁
+
+skinparam sequenceArrowThickness 1
+
+participant "主线程\nmain() → run()" as Main
+participant "acceptor\naccept 循环" as Acc
+participant "连接线程 A\nhandle_connection" as ConnA
+participant "连接线程 B\nSSE 写循环" as ConnB
+participant "worker 线程\nrun_task" as Worker
+
+Main -> Main : 构造 SseHub / TaskManager / HttpServer
+Main -> Acc : server.run() 阻塞在 accept
+
+Acc -> ConnA : 新连接 → std::thread(...).detach()
+Acc -> ConnB : 新连接 → std::thread(...).detach()
+
+ConnA -> ConnA : http::read 单次请求\n(keep_alive = false)\n处理完即退出
+
+ConnB -> ConnB : asio::write 响应头
+ConnB -> ConnB : hub.subscribe(...)
+ConnB -> ConnB : wait_for_event 阻塞在\ncondition_variable 上
+
+Worker -> Worker : run_task(id)
+Worker -> Worker : append_event → 锁 TaskManager::mutex_
+Worker -> Worker : event_sink_ → publish → 锁 SseHub::mutex_
+
+Worker -> ConnB : notify_one
+ConnB -> ConnB : 取事件 → write chunk
+ConnB -> ConnB : 终止态 → 退出循环 → 线程结束
+
+note over Worker, ConnB
+  加锁顺序固定为:
+  SseHub::mutex_ → Subscriber::mutex
+  不存在反向加锁,因此不会死锁。
+end note
+
+note over ConnB
+  隐患:SSE 线程只在写失败时
+  才发现客户端断开。
+  如果客户端静默消失,线程会一直
+  阻塞在 wait_for_event 上。
+end note
+
+@enduml

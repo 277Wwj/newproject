@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Boost 1.74 REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 find_package(nlohmann_json 3.11 REQUIRED)
