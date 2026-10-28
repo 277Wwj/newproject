@@ -1,0 +1,50 @@
+name: M1 verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install C++ dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-system-dev nlohmann-json3-dev
+      - name: Build C++ backend
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build -j2
+      - name: Run real backend tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Test frontend recovery logic
+        working-directory: frontend
+        run: npm test
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Verify frontend proxy with the real C++ backend
+        working-directory: frontend
+        run: |
+          ../build/nexus-server 127.0.0.1 8080 > /tmp/nexus-backend.log 2>&1 &
+          backend_pid=$!
+          node node_modules/vite/bin/vite.js --host 127.0.0.1 > /tmp/nexus-vite.log 2>&1 &
+          vite_pid=$!
+          trap 'kill "$backend_pid" "$vite_pid" 2>/dev/null || true' EXIT
+          node tests/proxy-smoke.mjs || { cat /tmp/nexus-backend.log /tmp/nexus-vite.log; exit 1; }

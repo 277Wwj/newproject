@@ -1,6 +1,7 @@
 import type { Task } from "./types";
-
-export type Health = { status: string; service: string; milestone: string };
+import { apiErrorText } from "./messages";
+import { parseHealth, parseTask } from "./protocol";
+import type { Health } from "./protocol";
 
 export class ApiError extends Error {
   readonly status?: number;
@@ -19,7 +20,7 @@ export function apiUrl(path: string): string {
   return `${apiBase}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function requestJson<T>(path: string, decode: (value: unknown) => T, init: RequestInit = {}): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 8_000);
   try {
@@ -30,36 +31,40 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
       try {
         data = JSON.parse(text) as unknown;
       } catch {
-        throw new ApiError(`Server returned a non-JSON response (HTTP ${response.status})`, response.status);
+        throw new ApiError(`服务端返回的内容不是 JSON（HTTP ${response.status}），请检查后端和 API 地址。`, response.status);
       }
     }
     if (!response.ok) {
       const message = typeof data === "object" && data !== null && "error" in data && typeof data.error === "string"
-        ? data.error
-        : `Request failed with HTTP ${response.status}`;
+        ? apiErrorText(data.error)
+        : `请求失败（HTTP ${response.status}），请检查后端服务和 API 代理。`;
       throw new ApiError(message, response.status);
     }
     if (data === null) {
-      throw new ApiError("Server returned an empty response", response.status);
+      throw new ApiError("服务端返回了空响应。", response.status);
     }
-    return data as T;
+    try {
+      return decode(data);
+    } catch (error) {
+      throw new ApiError(error instanceof Error ? error.message : "服务端响应格式无效。", response.status);
+    }
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new ApiError("The backend request timed out after 8 seconds");
+      throw new ApiError("请求后端超时（8 秒），请检查服务状态后重试。");
     }
-    throw new ApiError("Cannot reach the backend. Check that nexus-server is running on port 8080.");
+    throw new ApiError("无法连接后端。请确认 nexus-server 已启动，并检查 API 地址；默认后端端口为 8080。");
   } finally {
     window.clearTimeout(timeout);
   }
 }
 
 export function fetchHealth(): Promise<Health> {
-  return requestJson<Health>("/health");
+  return requestJson("/health", parseHealth);
 }
 
 export function createTask(prompt: string): Promise<Task> {
-  return requestJson<Task>("/tasks", {
+  return requestJson("/tasks", (value) => parseTask(value), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt }),
@@ -67,7 +72,7 @@ export function createTask(prompt: string): Promise<Task> {
 }
 
 export function fetchTask(taskId: string): Promise<Task> {
-  return requestJson<Task>(`/tasks/${encodeURIComponent(taskId)}`);
+  return requestJson(`/tasks/${encodeURIComponent(taskId)}`, (value) => parseTask(value, taskId));
 }
 
 export function taskEventsUrl(taskId: string): string {

@@ -8,3 +8,6 @@ frontend/vite.config.d.ts
 *.db
 *.sqlite
 *.sqlite3
+.env
+.env.*
+!.env.example

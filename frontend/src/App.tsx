@@ -1,139 +1,147 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, createTask, fetchHealth, fetchTask, taskEventsUrl } from "./api";
-import type { Task, TaskEvent, TaskStatus } from "./types";
+import { taskEventText, taskStatusText } from "./messages";
+import { watchTask } from "./task-stream";
+import type { StreamState, TaskWatcher } from "./task-stream";
+import type { Task } from "./types";
 
 type HealthState = "checking" | "online" | "offline";
-type StreamState = "idle" | "connecting" | "reconnecting" | "complete" | "failed";
-
-const statusCopy: Record<TaskStatus, string> = { queued: "Queued", running: "Executing", completed: "Complete", failed: "Failed" };
 
 function formatTime(value: string): string {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown time";
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(date);
 }
-
-function mergeEvents(current: TaskEvent[], incoming: TaskEvent[]): TaskEvent[] {
-  const bySequence = new Map(current.map((event) => [event.sequence, event]));
-  incoming.forEach((event) => bySequence.set(event.sequence, event));
-  return [...bySequence.values()].sort((left, right) => left.sequence - right.sequence);
-}
-
-function isTerminal(status: TaskStatus): boolean { return status === "completed" || status === "failed"; }
 
 function App() {
-  const [prompt, setPrompt] = useState("Inspect the current service health and explain the first diagnostic step.");
+  const [prompt, setPrompt] = useState("演示一次任务提交，观察排队、运行和完成事件。");
   const [task, setTask] = useState<Task | null>(null);
-  const [events, setEvents] = useState<TaskEvent[]>([]);
   const [health, setHealth] = useState<HealthState>("checking");
   const [streamState, setStreamState] = useState<StreamState>("idle");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const streamRef = useRef<EventSource | null>(null);
-  const terminalRef = useRef(false);
-  const recoveryRef = useRef(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const healthCheckRef = useRef(false);
+  const watcherRef = useRef<TaskWatcher | null>(null);
+  const errorRef = useRef<HTMLDivElement | null>(null);
+  const mountedRef = useRef(true);
 
   const checkHealth = useCallback(async () => {
-    setHealth("checking");
+    if (healthCheckRef.current) return;
+    healthCheckRef.current = true;
     try {
       await fetchHealth();
       setHealth("online");
-      setError((current) => current?.startsWith("Cannot reach") ? null : current);
-    } catch (healthError) {
+      setHealthError(null);
+    } catch (checkError) {
       setHealth("offline");
-      if (healthError instanceof ApiError) setError(healthError.message);
-    }
-  }, []);
-
-  const recoverTask = useCallback(async (taskId: string) => {
-    if (recoveryRef.current || terminalRef.current) return;
-    recoveryRef.current = true;
-    try {
-      const recovered = await fetchTask(taskId);
-      setTask(recovered);
-      setEvents((current) => mergeEvents(current, recovered.events ?? []));
-      if (isTerminal(recovered.status)) {
-        terminalRef.current = true;
-        streamRef.current?.close();
-        setStreamState(recovered.status === "failed" ? "failed" : "complete");
-      }
-    } catch (recoveryError) {
-      if (recoveryError instanceof ApiError) setError(recoveryError.message);
+      setHealthError(checkError instanceof ApiError ? checkError.message : "无法检查后端状态，请重试。");
     } finally {
-      recoveryRef.current = false;
+      healthCheckRef.current = false;
     }
   }, []);
 
   useEffect(() => {
     void checkHealth();
-    const interval = window.setInterval(() => { if (health !== "online") void checkHealth(); }, 10_000);
-    return () => { window.clearInterval(interval); streamRef.current?.close(); };
-  }, [checkHealth, health]);
+    const interval = window.setInterval(() => { void checkHealth(); }, 10_000);
+    return () => { window.clearInterval(interval); };
+  }, [checkHealth]);
 
-  const connectToTask = useCallback((nextTask: Task) => {
-    streamRef.current?.close();
-    terminalRef.current = isTerminal(nextTask.status);
-    setStreamState(nextTask.status === "completed" ? "complete" : nextTask.status === "failed" ? "failed" : "connecting");
-    const source = new EventSource(taskEventsUrl(nextTask.task_id));
-    streamRef.current = source;
-    const receive = (message: Event) => {
-      try {
-        const nextEvent = JSON.parse((message as MessageEvent<string>).data) as TaskEvent;
-        setEvents((current) => mergeEvents(current, [nextEvent]));
-        setTask((current) => current ? { ...current, status: nextEvent.status, updated_at: nextEvent.timestamp } : current);
-        if (isTerminal(nextEvent.status)) {
-          terminalRef.current = true;
-          source.close();
-          setStreamState(nextEvent.status === "failed" ? "failed" : "complete");
-        }
-      } catch {
-        setError("The backend sent an invalid SSE event. The stream will be retried.");
-        setStreamState("reconnecting");
-      }
-    };
-    source.onopen = () => setStreamState("connecting");
-    source.addEventListener("status", receive);
-    source.addEventListener("done", receive);
-    source.onerror = () => {
-      if (terminalRef.current) return;
-      setStreamState("reconnecting");
-      void recoverTask(nextTask.task_id);
-    };
-  }, [recoverTask]);
+  // Health changes must not tear down the task's event stream.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; watcherRef.current?.close(); };
+  }, []);
+
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
 
   const retryBackend = useCallback(() => {
-    setError(null);
-    void checkHealth().then(() => { if (task && !terminalRef.current) void recoverTask(task.task_id); });
-  }, [checkHealth, recoverTask, task]);
+    setHealth("checking");
+    void checkHealth().then(() => watcherRef.current?.refresh());
+  }, [checkHealth]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!prompt.trim() || submitting) return;
-    setSubmitting(true); setError(null); setEvents([]);
+    if (!prompt.trim() || new TextEncoder().encode(prompt.trim()).length > 4000 || submitting) return;
+    setSubmitting(true); setError(null);
     try {
       const created = await createTask(prompt.trim());
-      setTask(created); setEvents(created.events ?? []); connectToTask(created);
+      if (!mountedRef.current) return;
+      watcherRef.current?.close();
+      watcherRef.current = watchTask(created, {
+        fetchTask,
+        openEvents: (taskId) => new EventSource(taskEventsUrl(taskId)),
+      }, { onTask: setTask, onState: setStreamState, onError: setStreamError });
     } catch (submissionError) {
-      setError(submissionError instanceof Error ? submissionError.message : "Unable to create task");
+      setError(submissionError instanceof Error ? submissionError.message : "无法创建任务，请重试。");
     } finally { setSubmitting(false); }
   }
 
   const activeStatus = task?.status ?? "queued";
-  const progress = useMemo(() => !task ? 0 : activeStatus === "queued" ? 18 : activeStatus === "running" ? 58 : 100, [activeStatus, task]);
-  const statusLabel = task ? statusCopy[activeStatus] ?? "Unknown status" : "Queued";
-  const connectionLabel = health === "online" ? "Backend online" : health === "offline" ? "Backend offline" : "Checking backend";
+  const progress = useMemo(() => !task ? 0 : activeStatus === "queued" ? 18 : activeStatus === "running" ? 58 : activeStatus === "completed" || activeStatus === "failed" ? 100 : 0, [activeStatus, task]);
+  const events = task?.events ?? [];
+  const statusLabel = taskStatusText(activeStatus);
+  const connectionLabel = health === "online" ? "后端在线" : health === "offline" ? "后端离线" : "正在检查后端";
+  const promptBytes = new TextEncoder().encode(prompt.trim()).length;
+  const promptTooLong = promptBytes > 4000;
 
   return (
     <main className="shell">
-      <header className="topbar"><div className="brand"><span className="brand-mark">✳</span><span>NEXUS</span><small>AI LAB / M1</small></div><div className="connection" aria-live="polite"><span className={`connection-dot ${health}`} />{connectionLabel}</div></header>
-      <section className="intro"><p className="eyebrow">OBSERVABLE AGENT RUNTIME</p><h1>Give the runtime<br /><em>a question to investigate.</em></h1><p className="lede">A real-time control surface for AI-assisted systems work. M1 connects the task queue, execution stream, and operator timeline.</p></section>
-      <section className="workspace">
-        <form className="composer" onSubmit={handleSubmit}><div className="section-label"><span>01</span> TASK INPUT</div><label htmlFor="prompt">What should Nexus investigate?</label><textarea id="prompt" aria-describedby="prompt-help" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={4000} /><div id="prompt-help" className="composer-help">Use 1–4,000 non-whitespace characters.</div><div className="composer-footer"><span>{prompt.length.toLocaleString()} / 4,000 characters</span><button type="submit" disabled={submitting || !prompt.trim()}>{submitting ? "Starting…" : "Launch task ↗"}</button></div></form>
-        <section className="monitor" aria-live="polite"><div className="section-label"><span>02</span> LIVE MONITOR</div>{task ? <><div className="task-heading"><div><span className="task-id">{task.task_id}</span><h2>{statusLabel}</h2></div><span className={`status-badge ${activeStatus}`}>{activeStatus}</span></div><div className="progress-track"><div style={{ width: `${progress}%` }} /></div>{streamState === "reconnecting" && <p className="stream-note">Connection interrupted. Recovering task events…</p>}<div className="timeline">{events.map((item) => <div className="event-row" key={item.sequence}><span className="event-seq">{String(item.sequence).padStart(2, "0")}</span><span className={`event-marker ${item.status}`} /><div><strong>{item.message}</strong><small>{formatTime(item.timestamp)} · {item.status}</small></div></div>)}</div></> : <div className="empty-state"><span className="empty-glyph">○</span><p>No task is running.</p><small>Submit a prompt to open a live execution stream.</small></div>}</section>
+      <header className="topbar">
+        <div className="brand"><span className="brand-mark" aria-hidden="true">✳</span><span>NEXUS</span><small>AI 实验室 / M1</small></div>
+        <div className="connection" role="status"><span className={`connection-dot ${health}`} />{connectionLabel}</div>
+      </header>
+      <section className="intro">
+        <p className="eyebrow">可观测的 AGENT 运行时</p>
+        <h1>提交一个任务，<br /><em>看见每一步。</em></h1>
+        <p className="lede">连接 C++ 服务，实时查看任务状态与事件时间线。当前 M1 仅演示任务生命周期，尚未接入模型和诊断工具。</p>
       </section>
-      {error && <div className="error-banner" role="alert" tabIndex={-1}>{error}{health === "offline" && <button type="button" onClick={retryBackend}>Retry backend</button>}</div>}
-      <section className="lower-grid"><div><div className="section-label"><span>03</span> RUNTIME CONTRACT</div><p className="muted-copy">M1 exposes only the task lifecycle. Every event shown here came from the C++ service over HTTP and SSE.</p></div><div className="contract-list"><div><span>Transport</span><strong>Boost.Beast · SSE</strong></div><div><span>State</span><strong>In-memory · deterministic</strong></div><div><span>Next surface</span><strong>Whitelisted tools</strong></div></div></section>
-      <footer><span>NEXUS AI LAB</span><span>Linux-first / C++20 / React TS</span><span>Operator console · 2026</span></footer>
+      <section className="workspace">
+        <form className="composer" onSubmit={handleSubmit}>
+          <div className="section-label"><span>01</span> 任务输入</div>
+          <label htmlFor="prompt">这次想提交什么任务？</label>
+          <textarea id="prompt" aria-describedby="prompt-help prompt-count" aria-invalid={promptTooLong || undefined} value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={4000} />
+          <div id="prompt-help" className={`composer-help ${promptTooLong ? "input-error" : ""}`}>
+            {promptTooLong ? "内容超过 4,000 字节，请缩短后再提交。" : "不能为空或全为空白；最多 4,000 个 UTF-8 字节。通常一个汉字占 3 字节，首尾空白会自动去除。"}
+          </div>
+          <div className="composer-footer">
+            <span id="prompt-count">{promptBytes.toLocaleString("zh-CN")} / 4,000 字节</span>
+            <button type="submit" disabled={submitting || !prompt.trim() || promptTooLong}>{submitting ? "正在提交…" : "提交任务 ↗"}</button>
+          </div>
+        </form>
+        <section className="monitor" aria-live="polite" aria-label="任务实时状态">
+          <div className="section-label"><span>02</span> 实时监控</div>
+          {task ? <>
+            <div className="task-heading">
+              <div><span className="task-id">{task.task_id}</span><h2>{statusLabel}</h2></div>
+              <span className={`status-badge ${activeStatus}`}>{statusLabel}</span>
+            </div>
+            <div className="progress-track" aria-hidden="true"><div style={{ width: `${progress}%` }} /></div>
+            <p className="stage-note">进度条仅表示生命周期阶段，不代表诊断完成度。</p>
+            {streamState === "reconnecting" && <p className="stream-note">连接中断或事件异常，正在尝试恢复任务事件…</p>}
+            {streamState === "failed" && task.status !== "failed" && <p className="stream-note">事件同步已停止，请重新提交任务。</p>}
+            <div className="timeline">
+              {events.map((item) => <div className="event-row" key={item.sequence}>
+                <span className="event-seq">{String(item.sequence).padStart(2, "0")}</span>
+                <span className={`event-marker ${item.status}`} />
+                <div><strong>{taskEventText(item.message)}</strong><small>{formatTime(item.timestamp)} · {taskStatusText(item.status)}</small></div>
+              </div>)}
+            </div>
+          </> : <div className="empty-state"><span className="empty-glyph" aria-hidden="true">○</span><p>还没有任务</p><small>提交任务后，真实执行事件将在这里显示。</small></div>}
+        </section>
+      </section>
+      {healthError && <div className="error-banner" role="alert">
+        <div><strong>后端连接不可用</strong><p>{healthError}</p><p>每 10 秒自动检查一次；默认服务需监听 8080 端口。</p></div>
+        <button type="button" onClick={retryBackend} disabled={health === "checking"}>{health === "checking" ? "正在重试…" : "重试连接"}</button>
+      </div>}
+      {streamError && <div className="error-banner" role="alert">{streamError}{streamState === "reconnecting" && <button type="button" onClick={() => { void watcherRef.current?.refresh(); }}>重试同步</button>}</div>}
+      {error && <div className="error-banner" ref={errorRef} role="alert" tabIndex={-1}>{error}</div>}
+      <section className="lower-grid">
+        <div><div className="section-label"><span>03</span> 当前能力</div><p className="muted-copy">本版只验证任务提交、状态流转与实时推送。时间线来自 C++ 服务的真实事件；“已完成”表示演示流程结束，不代表已完成输入中的诊断需求。</p></div>
+        <div className="contract-list"><div><span>通信方式</span><strong>Boost.Beast · SSE</strong></div><div><span>任务状态</span><strong>内存保存 · 固定流程</strong></div><div><span>后续计划</span><strong>白名单工具（尚未实现）</strong></div></div>
+      </section>
+      <footer><span>NEXUS AI LAB · 中文版</span><span>面向 Linux / C++20 / React TS</span><span>任务控制台 · 2026</span></footer>
     </main>
   );
 }
