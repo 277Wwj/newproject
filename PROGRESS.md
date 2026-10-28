@@ -1,6 +1,6 @@
 # Nexus AI Lab 进度记录
 
-更新时间：2026-10-28。当前处于 M1 中文版与恢复逻辑的收尾验证阶段，范围仍为 M1，不扩展到 M2。
+更新时间：2026-10-28。M1 中文版、恢复逻辑修正、GitHub 上传和 Linux 自动验证已完成，范围仍为 M1，不扩展到 M2。
 
 ## 本轮目标与当前状态
 
@@ -9,10 +9,11 @@
 - 项目目录：`F:\codexproject\nexus-ai-lab`
 - Git 远程：[277Wwj/newproject](https://github.com/277Wwj/newproject)
 - 本轮起始 HEAD：`0ee75010238af6a0ad3b3daf836d7e470fd4603d`
-- 本轮改动仍在工作区，**待提交、待上传**；最终提交 SHA 和 CI 结果待实际操作后补充。
+- 功能提交：[`33c410dca9f69f8e449e1b45eef531b6273927e9`](https://github.com/277Wwj/newproject/commit/33c410dca9f69f8e449e1b45eef531b6273927e9)，已成功推送至 `origin/main`；本文件随后补充实际验证记录。
 - Windows 干净安装 `npm ci`、17 项前端回归测试 `npm test`、生产构建 `npm run build` 均已通过，退出码均为 0；构建包含 31 个模块。
-- 最终代码审查已通过，包含真实代理联调脚本与 CI 工作流的静态审查，没有剩余 P1/P2 问题；Linux CI 实际运行仍待推送。
-- 本机仍没有可用的 Linux/WSL 或 Docker/Podman，真实后端构建与 CTest 待目标环境执行。本轮浏览器工具因 kernel assets 路径故障不可用，未复测最终页面。
+- 最终代码审查已通过，包含真实代理联调脚本与 CI 工作流的静态审查，没有剩余 P1/P2 问题。
+- [Ubuntu CI 40637798846](https://github.com/277Wwj/newproject/actions/runs/40637798846) 全部通过：C++ 构建、3 项 CTest、前端安装/17 项测试/构建和真实 HTTP/SSE 代理联调。
+- 本机仍没有可用的 Linux/WSL 或 Docker/Podman，因此 Linux 验证在 GitHub Actions 执行。本轮浏览器工具因 kernel assets 路径故障不可用，未复测最终页面。
 
 ## 已保存的文件与职责
 
@@ -29,10 +30,10 @@
 | `frontend/src/styles.css` | 中文字体 fallback、行高、字号、窄屏换行和焦点样式；移除外部字体下载。 |
 | `frontend/index.html` | `lang="zh-CN"`、中文标题和页面描述。 |
 | `backend/tests/http_contract.sh` | 增强非法输入、ASCII/中文 4000/4001 字节边界、任务查询、SSE 顺序和终态关闭、完成后重放检查。 |
-| `.github/workflows/m1.yml` | Ubuntu 24.04 / Node 22 执行后端 CMake/CTest、前端安装/测试/构建及真实 Vite→C++ 联调，待上传后实际运行。 |
+| `.github/workflows/m1.yml` | Ubuntu 24.04 / Node 22 执行后端 CMake/CTest、前端安装/测试/构建及真实 Vite→C++ 联调，已实际运行通过。 |
 | `README.md` | 目录职责、模块依赖、启动/测试步骤、环境与 CI 状态。 |
 | `DEMO.md` | 中文演示、恢复行为、测试范围、日期明确的实测记录和待验证项目。 |
-| `PROGRESS.md`（本文件） | 收尾进度、验证证据与待办。 |
+| `PROGRESS.md`（本文件） | 已完成工作、验证证据与本机验收边界。 |
 
 前端依赖为 `App → api/task-stream/messages/types`，`api → protocol/messages`，`task-stream → protocol/types`；后端仍为 `main → HttpServer → TaskManager/SseHub`。HTTP/SSE 协议和 M1 产品范围不变：没有模型、工具执行、CPU/内存采集、SQLite 或诊断报告。
 
@@ -40,13 +41,14 @@
 
 1. Windows 干净安装 `npm ci`、`npm test`、`npm run build` 均返回退出码 0；17 项测试通过，TypeScript/Vite 构建包含 31 个模块。
 2. 前端测试覆盖非法协议数据、跨任务隔离、历史补齐、完成后的延迟结果、404 停止恢复、关闭连接的手动重建、重连查询合并、HTTP 错误和中文请求。测试使用受控 HTTP/事件连接，不代表真实后端或浏览器验收。
-3. 新增真实联调脚本 `frontend/tests/proxy-smoke.mjs`，本地 `node --check` 语法检查通过；由于没有可运行的 C++ 后端，真实执行待 CI。该脚本检查中文 HTML 标记和 Vite 代理后的真实 HTTP/SSE，不渲染页面。
+3. `frontend/tests/proxy-smoke.mjs` 在 Ubuntu CI 中使用真实 C++ 与 Vite 执行通过：中文 HTML、经代理创建中文任务、收到 1/2/3 三个 SSE 事件、终态正常关闭及查询完成状态。该脚本不渲染页面；Windows 本地另有 `node --check` 语法检查通过。
 4. 宿主侧 `wsl --list --verbose` 返回“未安装适用于 Linux 的 Windows 子系统”，退出码 1；未找到可用 Docker/Podman。现有 Windows MinGW 工具链 include 中没有 Boost.Beast 和 nlohmann/json 头文件。
-5. 经现有本地代理运行只读 `git ls-remote` 成功，返回远程 HEAD `0ee75010238af6a0ad3b3daf836d7e470fd4603d`；这只证明仓库可达，不表示本轮改动已上传。
+5. Git 上传成功，远程 `main` 从 `0ee7501` 更新到功能提交 `33c410d`；保留了原仓库历史。提交未包含 `build/`、`node_modules/`、`dist/`、数据库或 `.env`，凭据模式检查无匹配。
 6. 浏览器工具因 kernel assets 路径故障不可用。本轮没有产生新的视觉验收或真实浏览器端到端结果。
-7. 最终审查覆盖前端恢复逻辑、真实代理联调脚本和 CI 工作流，未报告剩余 P1/P2 问题；静态审查不替代待运行的 Linux CI。
+7. 最终审查覆盖前端恢复逻辑、真实代理联调脚本和 CI 工作流，未报告剩余 P1/P2 问题。
+8. Ubuntu CI 日志确认 GNU 13.3、Boost 1.83、nlohmann/json 3.11.3；3 项 CTest 全部通过，其中 HTTP 合约测试实际执行了异常输入、中文边界、SSE 顺序/终态/重放检查。Node 22 下的 17 项测试和 31 模块生产构建也全部通过。
 
-Linux CMake/CTest、真实 Vite→C++ 中文任务/SSE 联调、浏览器中的中文任务及完整断线恢复仍待验证。新增 CI 尚未实际执行，不能将本地前端测试当作 Linux 或 CI 结果。
+尚未复测：最终版本在真实浏览器中的中文任务、完整断线恢复与桌面/窄屏渲染。本轮受控连接测试和真实 HTTP/SSE 代理联调分别覆盖逻辑与网络路径，不代替浏览器交互验收。
 
 ## 保留的历史验证（2026-10-26）
 
@@ -59,12 +61,11 @@ Linux CMake/CTest、真实 Vite→C++ 中文任务/SSE 联调、浏览器中的�
 5. 桌面与 360 像素窄屏检查已执行；窄屏 DOM 内容宽度与可视宽度一致（345 像素，扣除滚动条），无整页横向溢出。
 6. 当时对 `messages.ts` 的一次性 Node 断言有 7 项通过；本轮已增加可重复运行的 `npm test`。
 
-## 收尾待办
+## 后续本机验收
 
-1. 代码最终审查已通过。检查待提交范围、忽略文件和敏感信息后，按用户已有授权提交并推送到 `277Wwj/newproject`，记录最终 SHA。
-2. 等待新提交的 GitHub Actions 实际运行，检查 Linux 后端 CTest、前端检查及真实 Vite→C++ 联调结果；失败时修复并重跑，记录运行链接。
-3. 按实际结果更新本文件、`README.md` 和 `DEMO.md`，保留未执行项目及其原因。
-4. Linux/WSL 环境和浏览器工具可用后，执行真实浏览器中的中文任务、SSE、断线恢复及最终桌面/窄屏验收。
+1. 按 `DEMO.md` 在 Linux/WSL 安装依赖并启动两个服务，执行已有自动化检查。
+2. 在真实浏览器中检查中文任务、SSE、断线恢复及最终桌面/窄屏布局；本机当前缺少 WSL，不能把 GitHub 的成功误认为本机服务已经启动。
+3. 收集运行反馈；未获用户下一阶段指示前不扩展到 M2。
 
 ## 运行与复验命令
 

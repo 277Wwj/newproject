@@ -6,7 +6,7 @@
 
 Nexus AI Lab 是一个 Linux-first 的可观测 AI Agent 执行与性能诊断平台。本轮只交付 M1：React + TypeScript 页面可以提交任务，C++20/Boost.Beast 服务创建内存任务，并通过 SSE 推送真实的 `queued → running → completed` 生命周期事件。
 
-当前 M1 的 `completed` 只表示生命周期演示结束，不表示完成了输入中的诊断需求；尚未调用模型或系统工具。Linux 后端与浏览器完整链路仍待实机验证，演示预期结果和已知限制详见 [DEMO.md](DEMO.md)。
+当前 M1 的 `completed` 只表示生命周期演示结束，不表示完成了输入中的诊断需求；尚未调用模型或系统工具。Linux 构建、后端测试和真实 Vite→C++ HTTP/SSE 联调已通过 GitHub Actions；浏览器交互仍需本机验收，详见 [DEMO.md](DEMO.md)。
 
 页面现默认使用简体中文，无需额外配置。任务输入、连接提示、状态、已知事件和错误文案均已中文化；`queued/running/completed/failed` 等 HTTP/SSE 字段与值保持原样，未知事件及异常详情保留原文。页面按实际提交内容计算 UTF-8 字节数，与后端的 4,000 字节上限一致。
 
@@ -94,7 +94,7 @@ ctest --test-dir build --output-on-failure
 ./build/nexus-server 0.0.0.0 8080
 ```
 
-`nexus_smoke` 检查任务生命周期和延迟建立 SSE 订阅时的事件回放；`nexus_sse_regression` 检查 backlog 与发布同一事件时的队列去重；Linux 上的 `nexus_http_contract` 启动真实服务，覆盖非法 JSON、空白及错误类型、ASCII/中文的 4000/4001 字节边界、任务查询、SSE 顺序与终态关闭、完成后重放和未知任务 404。这些是测试覆盖目标，不代表 Linux 测试已经运行通过。
+`nexus_smoke` 检查任务生命周期和延迟建立 SSE 订阅时的事件回放；`nexus_sse_regression` 检查 backlog 与发布同一事件时的队列去重；Linux 上的 `nexus_http_contract` 启动真实服务，覆盖非法 JSON、空白及错误类型、ASCII/中文的 4000/4001 字节边界、任务查询、SSE 顺序与终态关闭、完成后重放和未知任务 404。三个测试已在下方记录的 Ubuntu CI 中通过。
 
 前端（另一个终端）：
 
@@ -116,7 +116,7 @@ npm run dev
 
 2026-10-28 在 Windows 已完成干净 `npm ci` 安装、`npm test` 和 `npm run build`，退出码均为 0；17 项测试通过，TypeScript/Vite 构建包含 31 个模块，详见 [PROGRESS.md](PROGRESS.md)。2026-10-26 的中文页面和窄屏浏览器结果保留原日期；本轮浏览器工具因 kernel assets 路径故障不可用，未进行视觉复测。
 
-[M1 verification](.github/workflows/m1.yml) 配置为在推送 `main`、提交 PR 或手动触发时，使用 Ubuntu 24.04 和 Node 22 执行后端 CMake/CTest，以及前端 `npm ci`、`npm test`、`npm run build`；最后启动真实 C++ 和 Vite 服务执行 `frontend/tests/proxy-smoke.mjs`。该脚本通过 Vite `/api` 代理创建中文任务，检查 SSE 的三个有序事件、正常关闭和最终任务状态。本地仅完成脚本语法检查；工作流待上传后实际执行，尚无本轮 CI 结果。联调脚本不渲染浏览器页面，真实浏览器中的中文任务与断线恢复仍需单独验收。
+[M1 verification](.github/workflows/m1.yml) 在推送 `main`、提交 PR 或手动触发时运行。2026-10-28，功能提交 `33c410d` 的 [Ubuntu CI 运行记录](https://github.com/277Wwj/newproject/actions/runs/40637798846) 全部通过：C++ 构建、3 项 CTest、前端干净安装、17 项回归测试及生产构建，最后通过真实 C++ 和 Vite 服务执行 `frontend/tests/proxy-smoke.mjs`。实际环境为 Ubuntu 24.04、GNU 13.3、Boost 1.83、nlohmann/json 3.11.3、Node 22。联调校验了中文任务、SSE 的三个有序事件、正常关闭和最终任务查询；不渲染浏览器页面，真实浏览器中的中文任务与断线恢复仍需单独验收。
 
 ## API 验收
 

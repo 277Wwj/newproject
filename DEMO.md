@@ -4,11 +4,11 @@
 
 当前 `completed` 表示 M1 生命周期流程结束，**不表示已经完成输入文字中的诊断要求**。运行时会等待约 250 ms 后进入 `running`，再等待约 650 ms 后进入 `completed`。没有调用模型、读取系统指标、执行工具或生成诊断报告。页面进度条的 18%、58%、100% 是状态对应的固定视觉提示，不是实测工作量或性能数据。
 
-下文的命令和“预期结果”是验收方法，不代表已经在 Linux 上执行通过。本次文档编写没有在 Linux/WSL 中完成后端构建及浏览器端到端验证。
+下文的命令和“预期结果”是可复现的验收方法；已执行的结果单独记录如下。Linux 自动构建与真实 HTTP/SSE 代理联调已通过，浏览器端到端交互尚未完成本轮复测。
 
-中文版实际验证记录（2026-10-26）：Windows 开发机执行 `npm run build` 返回退出码 0，Vite 6.4.5 完成 29 个模块的构建。浏览器已打开真实 Vite 页面，显示中文内容和后端离线错误。Linux CMake/CTest、真实 C++ HTTP/SSE 完整链路仍待在目标环境验证。
+中文版历史验证记录（2026-10-26）：Windows 开发机执行 `npm run build` 返回退出码 0，Vite 6.4.5 完成 29 个模块的构建。浏览器已打开真实 Vite 页面，显示中文内容和后端离线错误；当时尚未执行 Linux 后端验证。
 
-收尾验证记录（2026-10-28）：Windows 上干净 `npm ci` 安装、`npm test` 和 `npm run build` 均返回退出码 0；17 项协议、HTTP 和事件恢复测试通过，TypeScript/Vite 构建包含 31 个模块。本机复核仍未安装 WSL，也没有可用 Docker/Podman；本轮浏览器工具因 kernel assets 路径故障不可用，因此没有复测 10 月 26 日的视觉结果。Ubuntu CI 配置及真实 Vite→C++ 联调脚本已加入本地工作区，后者本地仅完成语法检查，真实执行待上传后的 CI。受控连接的前端测试不代表真实后端或浏览器端到端测试已经通过。
+收尾验证记录（2026-10-28）：Windows 上干净 `npm ci` 安装、`npm test` 和 `npm run build` 均返回退出码 0；17 项协议、HTTP 和事件恢复测试通过，TypeScript/Vite 构建包含 31 个模块。功能提交 `33c410d` 已上传，[Ubuntu CI](https://github.com/277Wwj/newproject/actions/runs/40637798846) 已完成真实 C++ 构建、3 项 CTest、前端安装/测试/构建和真实 Vite→C++ 中文任务/SSE 联调，全部通过。本机仍未安装 WSL，也没有可用 Docker/Podman；浏览器工具因 kernel assets 路径故障不可用，因此没有复测 10 月 26 日的视觉结果。代理联调不等同于浏览器中的 React 交互验收。
 
 ## 1. 环境准备
 
@@ -238,11 +238,11 @@ cd ~/nexus-ai-lab/frontend
 node tests/proxy-smoke.mjs
 ```
 
-该脚本检查页面 HTML 的 `lang="zh-CN"`，通过 Vite `/api` 代理向真实后端创建中文任务，校验 SSE 序号 `1/2/3`、状态 `queued/running/completed` 和终态后的正常关闭，再查询任务确认中文内容与 `completed` 状态。它不使用模拟后端，也不运行浏览器或验证页面渲染。2026-10-28 本地只通过 `node --check tests/proxy-smoke.mjs` 语法检查，真实运行结果待 CI。
+该脚本检查页面 HTML 的 `lang="zh-CN"`，通过 Vite `/api` 代理向真实后端创建中文任务，校验 SSE 序号 `1/2/3`、状态 `queued/running/completed` 和终态后的正常关闭，再查询任务确认中文内容与 `completed` 状态。它不使用模拟后端，也不运行浏览器或验证页面渲染。2026-10-28 已在上述 Ubuntu CI 中真实运行通过；Windows 本机仅执行了语法检查。
 
 ### GitHub Actions
 
-`.github/workflows/m1.yml` 在推送 `main`、提交 PR 或手动触发时运行，环境为 Ubuntu 24.04 / Node 22。它先安装 Boost/json 开发包、构建真实 C++ 后端并执行三个 CTest，再执行前端 `npm ci`、`npm test` 和 `npm run build`，最后启动两个真实服务执行上述代理联调。本轮工作流待上传后执行；CI 结果应关联实际提交和运行记录，不能依据配置文件存在宣称通过。该工作流不包含真实浏览器端到端测试。
+`.github/workflows/m1.yml` 在推送 `main`、提交 PR 或手动触发时运行，环境为 Ubuntu 24.04 / Node 22。它先安装 Boost/json 开发包、构建真实 C++ 后端并执行三个 CTest，再执行前端 `npm ci`、`npm test` 和 `npm run build`，最后启动两个真实服务执行上述代理联调。功能提交 `33c410d` 的 [运行记录](https://github.com/277Wwj/newproject/actions/runs/40637798846) 已全部通过；该工作流不包含真实浏览器端到端测试。
 
 ### 中文页面验收
 
